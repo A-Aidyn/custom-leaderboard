@@ -126,60 +126,72 @@ function calculateAllRatings() {
     const teamAPerf = 0.5 + 0.5 * Math.tanh(marginA / 4);  // teamAPerf range: (0, 1)
     const teamBPerf = 1 - teamAPerf;
     
-    const processPlayer = (
-      p, 
-      myTeamPerf, 
-      myTeamAvgRating, 
-      oppTeamAvgRating,
-    ) => {
-      const state = players[p.player];
-      
-      // Individual performance metrics
-      const myKDA = (p.kills + p.assists * 0.5) / Math.max(p.deaths, 1);  // myKDA range: [0, ...]
-      const acsRatio = lobbyACS > 0 ? p.acs / lobbyACS : 1;  // acsRatio range: [0, 10]
-      const kdaRatio = lobbyKDA > 0 ? Math.min(myKDA / lobbyKDA, 2.5) : 1;  // kdaRatio range: [0, 2.5]
-      const perfIndex = 0.6 * acsRatio + 0.4 * kdaRatio;  // perfIndex range: [0, 7]
-      
-      // Elo calculation
+    // Performance sharpening constants
+    const PERF_GAMMA = 2.5;  // exponent to widen spread between high/low performers
+    const PERF_MIN = 0.70;   // clamp floor for perfIndex before sharpening
+    const PERF_MAX = 1.90;   // clamp ceiling for perfIndex before sharpening
+    
+    // Pass 1: compute per-player stats for each team
+    const computeTeamStats = (team, myTeamPerf, myTeamAvgRating, oppTeamAvgRating) => {
       const expected = 1 / (1 + Math.pow(10, (oppTeamAvgRating - myTeamAvgRating) / 400));  // expected range: (0, 1)
       const baseChange = myTeamPerf - expected;  // baseChange range: (-1, 1)
-      
-      // ASYMMETRIC PERFORMANCE MODIFIER
-      // Wins: High perfIndex = multiply gain (good)
-      // Losses: High perfIndex = reduce loss (multiply by 2-perfIndex, minimum 0.5x)
       const isGain = baseChange > 0;
-
-      // isGain = true -> perfMod range: [0, 7]
-      // isGain = false -> perfMod range: [0.5, 2]
-      const perfMod = isGain ? perfIndex : Math.max(0.5, 2 - perfIndex);
       
-      const baseK = 32 * Math.max(1 - state.matches / 30, 0.5);  // baseK range: [16, 32]
-      
-      // Uncertainty -> K multiplier: map u in [U_MIN, U_MAX] to kMult in [1, K_MULT_MAX]
-      var u01 = Math.max(0, Math.min(1, (state.uncertainty - U_MIN) / (U_MAX - U_MIN)));  // u01 range: [0, 1]
-      var kMult = 1 + u01 * (K_MULT_MAX - 1);  // kMult range: [1, 2]
-      var kFactor = baseK * kMult;  // kFactor range: [16, 64]
-      
-      const ratingChange = kFactor * baseChange * perfMod;
-      
-      // Update rating, match count, decay uncertainty, record date
-      state.rating += ratingChange;
-      state.matches++;
-      state.uncertainty = Math.max(U_MIN, state.uncertainty * DECAY);
-      state.lastDate = matchDate;
-      
-      // Record rating change for this raw data row
-      rowRatingChanges[p.rowIndex] = Math.round(ratingChange);
-
-      // Debug logging (optional)
-      Logger.log(`${p.player}: ${myTeamPerf.toFixed(3)} vs ${expected.toFixed(3)} exp, ` +
-                  `PI=${perfIndex.toFixed(3)}, uncertainty=${state.uncertainty.toFixed(1)}, Δ=${ratingChange.toFixed(2)}, ` +
-                  `new=${state.rating.toFixed(2)}`);
+      return team.map(p => {
+        const state = players[p.player];
+        
+        // Individual performance metrics
+        const myKDA = (p.kills + p.assists * 0.5) / Math.max(p.deaths, 1);  // myKDA range: [0, ...]
+        const acsRatio = lobbyACS > 0 ? p.acs / lobbyACS : 1;  // acsRatio range: [0, 10]
+        const kdaRatio = lobbyKDA > 0 ? Math.min(myKDA / lobbyKDA, 2.5) : 1;  // kdaRatio range: [0, 2.5]
+        const perfIndex = 0.6 * acsRatio + 0.4 * kdaRatio;  // perfIndex range: [0, 7]
+        
+        // Sharpen: clamp then raise to PERF_GAMMA to widen spread
+        const perfClamped = Math.max(PERF_MIN, Math.min(PERF_MAX, perfIndex));
+        const rawPerf = Math.pow(perfClamped, PERF_GAMMA);  // rawPerf range: [0.70^2.5, 1.90^2.5] ≈ [0.41, 4.97]
+        
+        // K-factor with uncertainty
+        const baseK = 32 * Math.max(1 - state.matches / 30, 0.5);  // baseK range: [16, 32]
+        var u01 = Math.max(0, Math.min(1, (state.uncertainty - U_MIN) / (U_MAX - U_MIN)));  // u01 range: [0, 1]
+        var kMult = 1 + u01 * (K_MULT_MAX - 1);  // kMult range: [1, 2]
+        var kFactor = baseK * kMult;  // kFactor range: [16, 64]
+        
+        return { p: p, state: state, perfIndex: perfIndex, rawPerf: rawPerf, kFactor: kFactor, baseChange: baseChange, isGain: isGain };
+      });
     };
     
-    // Update all players
-    teamA.forEach(p => processPlayer(p, teamAPerf, teamAAvgRating, teamBAvgRating));
-    teamB.forEach(p => processPlayer(p, teamBPerf, teamBAvgRating, teamAAvgRating));
+    // Pass 2: normalize within team and apply rating changes
+    const applyTeamChanges = (teamStats) => {
+      // K-weighted mean of rawPerf (for wins) or 1/rawPerf (for losses)
+      var sumK = teamStats.reduce((s, t) => s + t.kFactor, 0);
+      
+      if (teamStats[0].isGain) {
+        var meanRaw = teamStats.reduce((s, t) => s + t.kFactor * t.rawPerf, 0) / sumK;
+        teamStats.forEach(t => { t.perfMod = t.rawPerf / meanRaw; });  // normalized so K-weighted average = 1
+      } else {
+        var meanInv = teamStats.reduce((s, t) => s + t.kFactor * (1 / t.rawPerf), 0) / sumK;
+        teamStats.forEach(t => { t.perfMod = (1 / t.rawPerf) / meanInv; });  // high performers lose less
+      }
+      
+      teamStats.forEach(t => {
+        var ratingChange = t.kFactor * t.baseChange * t.perfMod;
+        
+        t.state.rating += ratingChange;
+        t.state.matches++;
+        t.state.uncertainty = Math.max(U_MIN, t.state.uncertainty * DECAY);
+        t.state.lastDate = matchDate;
+        
+        rowRatingChanges[t.p.rowIndex] = Math.round(ratingChange);
+        
+        Logger.log(`${t.p.player}: ${(t.baseChange + (t.isGain ? 0.5 : 0.5)).toFixed(3)} team, ` +
+                    `PI=${t.perfIndex.toFixed(3)}, perfMod=${t.perfMod.toFixed(3)}, Δ=${ratingChange.toFixed(2)}, ` +
+                    `new=${t.state.rating.toFixed(2)}`);
+      });
+    };
+    
+    // Process both teams
+    applyTeamChanges(computeTeamStats(teamA, teamAPerf, teamAAvgRating, teamBAvgRating));
+    applyTeamChanges(computeTeamStats(teamB, teamBPerf, teamBAvgRating, teamAAvgRating));
   }
   
   // --- Write Rating Change sheet (Raw Data columns + Rating Change) ---
@@ -213,10 +225,6 @@ function calculateAllRatings() {
     return Number(b[9]) - Number(a[9]);
   });
   
-  for (let i = 0; i < 15; i ++) {
-    Logger.log(`i: ${i} | rcRow[i]: ${rcRows[i]}`);
-  }
-
   if (rcRows.length > 0) {
     rcSheet.getRange(2, 1, rcRows.length, rcHeader.length).setValues(rcRows);
   }
