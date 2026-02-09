@@ -5,6 +5,8 @@ function validateMatch(matchPlayers) {
         return false;  
       }
   }
+
+  return true;
 }
 
 function calculateAllRatings() {
@@ -65,6 +67,10 @@ function calculateAllRatings() {
   for (const matchID of sortedMatchIDs) {
     const matchPlayers = matches[matchID];
         
+    if (!validateMatch(matchPlayers)) {
+      continue;
+    }
+
     // Split teams
     const teamA = matchPlayers.filter(p => p.team === 'A');
     const teamB = matchPlayers.filter(p => p.team === 'B');
@@ -74,10 +80,9 @@ function calculateAllRatings() {
       continue;
     }
     
-    // Parse and validate match date (YYYY-MM-DD string at index 0)
-    const rawDate = String(matchPlayers[0].date);
-    const matchDate = new Date(rawDate + 'T00:00:00');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(rawDate) || isNaN(matchDate.getTime())) {
+    // Validate match date (Google Sheets returns native Date objects)
+    const matchDate = matchPlayers[0].date;
+    if (!(matchDate instanceof Date) || isNaN(matchDate.getTime())) {
       Logger.log(`Error: Match ${matchID} has invalid date "${matchPlayers[0].date}", skipping`);
       continue;
     }
@@ -184,18 +189,19 @@ function calculateAllRatings() {
       player: name,
       rating: Math.round(data.rating),
       matches: data.matches,
-      uncertainty: Math.round(data.uncertainty)
+      uncertainty: Math.round(data.uncertainty),
+      lastPlayed: data.lastDate
     }))
     .sort((a, b) => b.rating - a.rating);
   
-  // Build header row: Rank, Player, Rating, Matches, Uncertainty, ...matchIDs
-  const headerRow = ['Rank', 'Player', 'Rating', 'Matches', 'Uncertainty']
+  // Build header row: Rank, Player, Rating, Matches, Uncertainty, Last Played, ...matchIDs
+  const headerRow = ['Rank', 'Player', 'Rating', 'Matches', 'Uncertainty', 'Last Played']
     .concat(sortedMatchIDs);
   const numCols = headerRow.length;
   
   // Build data rows with per-match rating deltas
   const lbData = sortedPlayers.map((p, index) => {
-    const baseRow = [index + 1, p.player, p.rating, p.matches, p.uncertainty];
+    const baseRow = [index + 1, p.player, p.rating, p.matches, p.uncertainty, p.lastPlayed || ''];
     const history = ratingHistory[p.player] || {};
     const matchCols = sortedMatchIDs.map(mid => {
       return history[mid] !== undefined ? history[mid] : '';
@@ -213,60 +219,63 @@ function calculateAllRatings() {
   
   // Formatting
   lbSheet.autoResizeColumns(1, numCols);
+  if (lbData.length > 0) {
+    lbSheet.getRange(2, 6, lbData.length, 1).setNumberFormat('yyyy-mm-dd');
+  }
   
-  // Add conditional formatting for tiers (optional)
-  const ratingRange = lbSheet.getRange(2, 3, lbData.length, 1); // Column C (Rating)
-  
-  // Clear old rules
+  // Add conditional formatting for tiers (only if there are players)
   lbSheet.setConditionalFormatRules([]);
   
-  // Add color coding by rating tiers
-  const rules = [
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberGreaterThanOrEqualTo(2000)
-      .setBackground('#FF4655') // Radiant - Red
-      .setFontColor('#FFFFFF')
-      .setRanges([ratingRange])
-      .build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberBetween(1800, 1999)
-      .setBackground('#B784F7') // Immortal - Purple
-      .setFontColor('#FFFFFF')
-      .setRanges([ratingRange])
-      .build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberBetween(1600, 1799)
-      .setBackground('#00B4D8') // Diamond - Blue
-      .setFontColor('#FFFFFF')
-      .setRanges([ratingRange])
-      .build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberBetween(1400, 1599)
-      .setBackground('#A0A0A0') // Platinum - Gray
-      .setFontColor('#FFFFFF')
-      .setRanges([ratingRange])
-      .build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberBetween(1200, 1399)
-      .setBackground('#FFD700') // Gold - Gold
-      .setFontColor('#000000')
-      .setRanges([ratingRange])
-      .build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberBetween(1000, 1199)
-      .setBackground('#C0C0C0') // Silver - Silver
-      .setFontColor('#000000')
-      .setRanges([ratingRange])
-      .build(),
-    SpreadsheetApp.newConditionalFormatRule()
-      .whenNumberLessThan(1000)
-      .setBackground('#CD7F32') // Bronze - Bronze
-      .setFontColor('#FFFFFF')
-      .setRanges([ratingRange])
-      .build()
-  ];
-  
-  lbSheet.setConditionalFormatRules(rules);
+  if (lbData.length > 0) {
+    const ratingRange = lbSheet.getRange(2, 3, lbData.length, 1); // Column C (Rating)
+    
+    const rules = [
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberGreaterThanOrEqualTo(2000)
+        .setBackground('#FF4655') // Radiant - Red
+        .setFontColor('#FFFFFF')
+        .setRanges([ratingRange])
+        .build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberBetween(1800, 1999)
+        .setBackground('#B784F7') // Immortal - Purple
+        .setFontColor('#FFFFFF')
+        .setRanges([ratingRange])
+        .build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberBetween(1600, 1799)
+        .setBackground('#00B4D8') // Diamond - Blue
+        .setFontColor('#FFFFFF')
+        .setRanges([ratingRange])
+        .build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberBetween(1400, 1599)
+        .setBackground('#A0A0A0') // Platinum - Gray
+        .setFontColor('#FFFFFF')
+        .setRanges([ratingRange])
+        .build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberBetween(1200, 1399)
+        .setBackground('#FFD700') // Gold - Gold
+        .setFontColor('#000000')
+        .setRanges([ratingRange])
+        .build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberBetween(1000, 1199)
+        .setBackground('#C0C0C0') // Silver - Silver
+        .setFontColor('#000000')
+        .setRanges([ratingRange])
+        .build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberLessThan(1000)
+        .setBackground('#CD7F32') // Bronze - Bronze
+        .setFontColor('#FFFFFF')
+        .setRanges([ratingRange])
+        .build()
+    ];
+    
+    lbSheet.setConditionalFormatRules(rules);
+  }
   
   // Alert completion
   SpreadsheetApp.getUi().alert(
