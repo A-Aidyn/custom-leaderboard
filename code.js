@@ -34,8 +34,8 @@ function calculateAllRatings() {
   // Player state storage: { playerName: { rating, matches, u, lastDate } }
   const players = {};
   
-  // Per-player per-match rating changes: { playerName: { matchID: ratingChange } }
-  const ratingHistory = {};
+  // Per-row rating changes keyed by raw data row index
+  const rowRatingChanges = {};
   
   // Group data by MatchID for efficient processing
   const matches = {};
@@ -168,9 +168,8 @@ function calculateAllRatings() {
       state.uncertainty = Math.max(U_MIN, state.uncertainty * DECAY);
       state.lastDate = matchDate;
       
-      // Record rating change for leaderboard history
-      if (!ratingHistory[p.player]) ratingHistory[p.player] = {};
-      ratingHistory[p.player][matchID] = Math.round(ratingChange);
+      // Record rating change for this raw data row
+      rowRatingChanges[p.rowIndex] = Math.round(ratingChange);
 
       // Debug logging (optional)
       Logger.log(`${p.player}: ${myTeamPerf.toFixed(3)} vs ${expected.toFixed(3)} exp, ` +
@@ -183,7 +182,82 @@ function calculateAllRatings() {
     teamB.forEach(p => processPlayer(p, teamBPerf, teamBAvgRating, teamAAvgRating));
   }
   
-  // Prepare Leaderboard data with uncertainty and per-match rating changes
+  // --- Write Rating Change sheet (Raw Data columns + Rating Change) ---
+  var rcSheet = ss.getSheetByName('Rating Change');
+  if (!rcSheet) rcSheet = ss.insertSheet('Rating Change');
+  rcSheet.clear();
+  
+  const rawHeader = rawData[0];
+  const rcHeader = rawHeader.concat(['Rating Change']);
+  rcSheet.getRange(1, 1, 1, rcHeader.length).setValues([rcHeader]);
+  
+  const rcRows = [];
+  for (var i = 1; i < rawData.length; i++) {
+    var change = rowRatingChanges[i] !== undefined ? rowRatingChanges[i] : '';
+    rcRows.push(rawData[i].concat([change]));
+  }
+  // Sort: date asc, matchID asc, team asc, ACS desc, kills desc
+  rcRows.sort(function(a, b) {
+    if (a[0] < b[0]) return -1;
+    if (a[0] > b[0]) return 1;
+
+    if (a[1].localeCompare(b[1]) === -1) return -1;
+    if (a[1].localeCompare(b[1]) === 1) return 1;
+
+    if (Number(a[6]) < Number(b[6])) return -1;
+    if (Number(a[6]) > Number(b[6])) return 1;
+
+    if (a[5] < b[5]) return -1;
+    if (a[5] > b[5]) return 1;
+    if (Number(b[8]) !== Number(a[8])) return Number(b[8]) - Number(a[8]);
+    return Number(b[9]) - Number(a[9]);
+  });
+  
+  for (let i = 0; i < 15; i ++) {
+    Logger.log(`i: ${i} | rcRow[i]: ${rcRows[i]}`);
+  }
+
+  if (rcRows.length > 0) {
+    rcSheet.getRange(2, 1, rcRows.length, rcHeader.length).setValues(rcRows);
+  }
+  rcSheet.autoResizeColumns(1, rcHeader.length);
+  
+  if (rcRows.length > 0) {
+    // Format date column (column 1) as YYYY-MM-DD
+    rcSheet.getRange(2, 1, rcRows.length, 1).setNumberFormat('yyyy-mm-dd');
+    
+    // Alternating background on matchID (col 2) and map (col 3) to separate matches
+    var colors = ['#FFFFFF', '#E8EAF6'];
+    var colorIdx = 0;
+    var prevMatchID = rcRows[0][1];
+    for (var r = 0; r < rcRows.length; r++) {
+      if (rcRows[r][1] !== prevMatchID) {
+        colorIdx = 1 - colorIdx;
+        prevMatchID = rcRows[r][1];
+      }
+      rcSheet.getRange(r + 2, 1, 1, rcHeader.length - 1).setBackground(colors[colorIdx]);
+    }
+    
+    // Color the Rating Change column: green for positive, red for negative
+    var rcCol = rcHeader.length;
+    var rcRange = rcSheet.getRange(2, rcCol, rcRows.length, 1);
+    rcSheet.setConditionalFormatRules([
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberGreaterThan(0)
+        .setBackground('#D9EAD3')
+        .setFontColor('#006100')
+        .setRanges([rcRange])
+        .build(),
+      SpreadsheetApp.newConditionalFormatRule()
+        .whenNumberLessThan(0)
+        .setBackground('#F4CCCC')
+        .setFontColor('#CC0000')
+        .setRanges([rcRange])
+        .build()
+    ]);
+  }
+  
+  // --- Write Leaderboard sheet ---
   const sortedPlayers = Object.entries(players)
     .map(([name, data]) => ({
       player: name,
@@ -194,24 +268,15 @@ function calculateAllRatings() {
     }))
     .sort((a, b) => b.rating - a.rating);
   
-  // Build header row: Rank, Player, Rating, Matches, Uncertainty, Last Played, ...matchIDs
-  const headerRow = ['Rank', 'Player', 'Rating', 'Matches', 'Uncertainty', 'Last Played']
-    .concat(sortedMatchIDs);
-  const numCols = headerRow.length;
+  const lbHeader = ['Rank', 'Player', 'Rating', 'Matches', 'Uncertainty', 'Last Played'];
+  const numCols = lbHeader.length;
   
-  // Build data rows with per-match rating deltas
   const lbData = sortedPlayers.map((p, index) => {
-    const baseRow = [index + 1, p.player, p.rating, p.matches, p.uncertainty, p.lastPlayed || ''];
-    const history = ratingHistory[p.player] || {};
-    const matchCols = sortedMatchIDs.map(mid => {
-      return history[mid] !== undefined ? history[mid] : '';
-    });
-    return baseRow.concat(matchCols);
+    return [index + 1, p.player, p.rating, p.matches, p.uncertainty, p.lastPlayed || ''];
   });
 
-  // Write Leaderboard
   lbSheet.clear();
-  lbSheet.getRange(1, 1, 1, numCols).setValues([headerRow]);
+  lbSheet.getRange(1, 1, 1, numCols).setValues([lbHeader]);
   
   if (lbData.length > 0) {
     lbSheet.getRange(2, 1, lbData.length, numCols).setValues(lbData);
