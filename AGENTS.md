@@ -12,7 +12,7 @@ Google Apps Script (GAS) project that calculates Elo-style player ratings for Va
   - `validateMatch` — validates team labels on match player rows.
   - `calculateAllRatings` — reads "Raw Data" sheet, computes modified Elo ratings (ACS/KDA performance index), writes ranked results to "Leaderboard" with tier-colored conditional formatting.
   - `onOpen` — adds a custom menu to the spreadsheet UI.
-- **Data**: Google Sheet with "Raw Data" (MatchID, Player, Team, RoundsWon/Lost, ACS, K/D/A) and "Leaderboard" (output).
+- **Data**: Google Sheet with "Raw Data" (MatchDate, MatchID, Player, Team, RoundsWon/Lost, ACS, K/D/A) and "Leaderboard" (output).
 
 ## Code Style
 - Plain ES5-compatible JS (GAS runtime). No modules, imports, or TypeScript.
