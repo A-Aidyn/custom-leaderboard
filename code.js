@@ -56,6 +56,9 @@ function calculateAllRatings() {
       kills: Number(row[9]) || 0,
       deaths: Number(row[10]) || 0,
       assists: Number(row[11]) || 0,
+      kast: Number(row[12]) || 0,
+      firstBloods: Number(row[13]) || 0,
+      firstDeaths: Number(row[14]) || 0,
     });
   }
   
@@ -115,6 +118,10 @@ function calculateAllRatings() {
     });
     const lobbyKDA = matchKDAs.reduce((a, b) => a + b, 0) / 10;
     
+    const lobbyKAST = matchPlayers.reduce((sum, p) => sum + p.kast, 0) / 10;
+    const lobbyFB = matchPlayers.reduce((sum, p) => sum + p.firstBloods, 0) / 10;
+    const lobbyFD = matchPlayers.reduce((sum, p) => sum + p.firstDeaths, 0) / 10;
+    
     // Get team ratings
     const teamARatings = teamA.map(p => players[p.player].rating);
     const teamBRatings = teamB.map(p => players[p.player].rating);
@@ -140,18 +147,23 @@ function calculateAllRatings() {
       return team.map(p => {
         const state = players[p.player];
         
-        // Individual performance metrics
-        const myKDA = (p.kills + p.assists * 0.5) / Math.max(p.deaths, 1);  // myKDA range: [0, ...]
-        const acsRatio = lobbyACS > 0 ? p.acs / lobbyACS : 1;  // acsRatio range: [0, 10]
-        const kdaRatio = lobbyKDA > 0 ? Math.min(myKDA / lobbyKDA, 2.5) : 1;  // kdaRatio range: [0, 2.5]
-        const perfIndex = 0.6 * acsRatio + 0.4 * kdaRatio;  // perfIndex range: [0, 7]
+        // Individual performance metrics (ratios vs lobby average)
+        const myKDA = (p.kills + p.assists * 0.5) / Math.max(p.deaths, 1);
+        const acsRatio = lobbyACS > 0 ? p.acs / lobbyACS : 1;
+        const kdaRatio = lobbyKDA > 0 ? Math.min(myKDA / lobbyKDA, 2.5) : 1;
+        const kastRatio = lobbyKAST > 0 ? p.kast / lobbyKAST : 1;
+        const fbRatio = lobbyFB > 0 ? p.firstBloods / lobbyFB : 1;
+        const fdRatio = lobbyFD > 0 ? p.firstDeaths / lobbyFD : 1;
+        
+        // perfIndex: ACS + KDA for fragging, KAST for consistency, FB for aggression, low FD rewarded
+        const perfIndex = 0.35 * acsRatio + 0.25 * kdaRatio + 0.20 * kastRatio + 0.10 * fbRatio + 0.10 * (2 - fdRatio);
         
         // Sharpen: clamp then raise to PERF_GAMMA to widen spread
         const perfClamped = Math.max(PERF_MIN, Math.min(PERF_MAX, perfIndex));
         const rawPerf = Math.pow(perfClamped, PERF_GAMMA);  // rawPerf range: [0.70^2.5, 1.90^2.5] ≈ [0.41, 4.97]
         
         // K-factor with uncertainty
-        const baseK = 32 * Math.max(1 - state.matches / 30, 0.5);  // baseK range: [16, 32]
+        const baseK = 32 * (0.5 + 0.5 * Math.exp(-state.matches / 20));  // baseK range: ~[16, 32], smooth exponential decay
         var u01 = Math.max(0, Math.min(1, (state.uncertainty - U_MIN) / (U_MAX - U_MIN)));  // u01 range: [0, 1]
         var kMult = 1 + u01 * (K_MULT_MAX - 1);  // kMult range: [1, 2]
         var kFactor = baseK * kMult;  // kFactor range: [16, 64]
